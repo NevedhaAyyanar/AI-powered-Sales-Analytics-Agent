@@ -58,7 +58,7 @@ def load_data(date: str=None) -> str:
         f"Order Date range: {df['order_date'].min()} to {df['order_date'].max()}\n"
         f"Total orders: {df['order_number'].nunique()}\n"
         f"Total revenue: {df['revenue'].sum():,.2f}\n"
-        f"Channels: {', '.join(df['sales_channel'].unique())}\n"
+        f"Channels: {', '.join(df['sales_channel'].dropna().unique().astype(str))}\n"
     )
 
     return summary
@@ -111,7 +111,7 @@ def load_date_range(start_date: str, end_date:str) -> str:
         f"Order Date range: {combined['order_date'].min()} to {combined['order_date'].max()}\n"
         f"Total orders: {combined['order_number'].nunique()}\n"
         f"Total revenue: {combined['revenue'].sum():,.2f}\n"
-        f"Channels: {', '.join(combined['sales_channel'].unique())}"
+        f"Channels: {', '.join(combined['sales_channel'].dropna().unique().astype(str))}"
         )
 
         if missing_files:

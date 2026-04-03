@@ -202,12 +202,13 @@ def run_agent(user_message: str, chat_history: list = None) -> str:
     messages.append(("human", user_message))
 
     response = agent.invoke({"messages": messages})
+    return response["messages"][-1].content
 
-    final_answer = response["messages"][-1].content
+    #final_answer = response["messages"][-1].content
 
     # Output guardrail
-    warning = _check_output(response)
-    if warning:
-        final_answer += warning
+    # warning = _check_output(response)
+    # if warning:
+    #     final_answer += warning
 
-    return final_answer
+    # return final_answer

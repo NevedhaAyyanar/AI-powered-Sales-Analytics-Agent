@@ -4,6 +4,8 @@ import numpy as np
 from langchain_core.tools import tool
 from src.tools.loader import _data_cache, _download_csv
 
+NUMERIC_COLS = ["volume", "unit_price", "discount_pct", "discount_amount", "gross_revenue", "revenue"]
+
 def _get_dim_product() -> pd.DataFrame:
     """Load dim_product from cache or Azure blob storage"""
     if "dim_product" not in _data_cache:
@@ -12,10 +14,19 @@ def _get_dim_product() -> pd.DataFrame:
         except Exception:
             return None
     return _data_cache["dim_product"]
+
+def _coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce numeric columns to appropriate types, handling errors."""
+    df = df.copy()
+    for col in NUMERIC_COLS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
         
 def _check_revenue_mismatch(df: pd.DataFrame) -> dict:
     """Check: revenue != gross_revenue - discount_amount"""
-    df_check = df.copy()
+    df_check = _coerce_numeric(df)
+    df_check = df_check.dropna(subset=["gross_revenue", "discount_amount", "revenue"])
     df_check["expected_revenue"] = df_check["gross_revenue"] - df_check["discount_amount"]
     mismatches = df_check[~np.isclose(df_check["revenue"], df_check["expected_revenue"],atol=0.01)]
     
@@ -71,7 +82,8 @@ def _check_line_item_gaps(df: pd.DataFrame) -> dict:
 
 def _check_gross_revenue_mismatch(df: pd.DataFrame) -> dict:
     """Check: gross_revenue != volume * unit_price"""
-    df_check = df.copy()
+    df_check =_coerce_numeric(df)
+    df_check = df_check.dropna(subset=["volume", "unit_price"])
     df_check["expected_gross"] = df_check["volume"] * df_check["unit_price"]
     mismatches = df_check[~np.isclose(df_check["gross_revenue"], df_check["expected_gross"], atol=0.01)]
 
@@ -86,7 +98,8 @@ def _check_gross_revenue_mismatch(df: pd.DataFrame) -> dict:
 
 def _check_discount_amount_mismatch(df: pd.DataFrame) -> dict:
     """Check: discount_amount != volume * unit_price * discount_pct / 100"""
-    df_check = df.copy()
+    df_check = _coerce_numeric(df)
+    df_check = df_check.dropna(subset=["volume", "unit_price", "discount_pct"])
     df_check["expected_discount"] = df_check["volume"] * df_check["unit_price"] * df_check["discount_pct"] / 100
     mismatches = df_check[~np.isclose(df_check["discount_amount"], df_check["expected_discount"], atol=0.01)]
 
@@ -148,11 +161,12 @@ def _check_null_values(df: pd.DataFrame) -> dict:
 
 def _check_negative_values(df: pd.DataFrame) -> dict:
     """Check: negative values in numeric columns"""
-    numeric_cols = ["volume", "unit_price", "discount_pct", "discount_amount", "gross_revenue", "revenue"]
+    df_check = _coerce_numeric(df)
+
     issues = []
-    for col in numeric_cols:
+    for col in NUMERIC_COLS:
         if col in df.columns:
-            negatives = df[df[col] < 0]
+            negatives = df_check[df_check[col] < 0]
             if len(negatives) > 0:
                 issues.append(f"  {col}: {len(negatives)} negative values")
 
@@ -180,16 +194,19 @@ def _check_duplicate_rows(df: pd.DataFrame) -> dict:
 
 def _check_outliers(df: pd.DataFrame) -> dict:
     """Check: statistical outliers using IQR method"""
-    numeric_cols = ["volume", "unit_price", "gross_revenue", "revenue"]
+    df_check = _coerce_numeric(df)
     issues = []
-    for col in numeric_cols:
-        if col in df.columns:
-            q1 = df[col].quantile(0.25)
-            q3 = df[col].quantile(0.75)
+    for col in NUMERIC_COLS:
+        if col in df_check.columns:
+            col_data = df_check[col].dropna()
+            if len(col_data) == 0:
+                continue
+            q1 = col_data.quantile(0.25)
+            q3 = col_data.quantile(0.75)
             iqr = q3 - q1
             lower = q1 - 1.5 * iqr
             upper = q3 + 1.5 * iqr
-            outliers = df[(df[col] < lower) | (df[col] > upper)]
+            outliers = df_check[(df_check[col] < lower) | (df_check[col] > upper)]
             if len(outliers) > 0:
                 issues.append(f"  {col}: {len(outliers)} outliers (range: {lower:.2f} to {upper:.2f})")
 
@@ -202,6 +219,23 @@ def _check_outliers(df: pd.DataFrame) -> dict:
         "remediation": "Review outliers — may be valid high-volume orders or data errors"
     }
 
+def _check_invalid_dates(df: pd.DataFrame) -> dict:
+    """Check for unparseable dates in order_date."""
+    parsed = pd.to_datetime(df["order_date"], format="mixed", errors="coerce")
+    invalid = df[parsed.isna()]
+    details = None
+    if len(invalid) > 0:
+        details = f"Unparseable dates ({len(invalid)} rows):\n" + invalid[["order_number", "line_item", "order_date"]].head(10).to_string(index=False)
+    return {
+        "check": "Invalid Dates",
+        "description": "Unparseable dates in order_date",
+        "issues_found": len(invalid),
+        "severity": "HIGH" if len(invalid) > 0 else "PASS",
+        "details": details,
+        "remediation": "Fix invalid date values to a valid date format"
+    }
+
+
 _CHECK_MAP = {
     "revenue_mismatch": _check_revenue_mismatch,
     "duplicate_keys": _check_duplicate_keys,
@@ -213,6 +247,7 @@ _CHECK_MAP = {
     "negative_values": _check_negative_values,
     "duplicate_rows": _check_duplicate_rows,
     "outliers": _check_outliers,
+    "invalid_dates": _check_invalid_dates,
 }
 
 @tool
@@ -223,7 +258,7 @@ def validate_data(check_type: str = None, date: str = None) -> str:
         check_type: Optional check name. Valid values: revenue_mismatch,
             duplicate_keys, line_item_gaps, gross_revenue_mismatch,
             discount_mismatch, product_consistency, null_values,
-            negative_values, duplicate_rows, outliers
+            negative_values, duplicate_rows, outliers, invalid_dates
         date: Date key for data to validate (e.g., '2025-02-01' or
             '2025-02-01_to_2025-02-07'). Must match a key in loaded data.
 
@@ -288,7 +323,7 @@ def detect_anomalies(column: str = None, method: str = "iqr", date: str = None) 
     if method not in ("iqr","zscore"):
         return f"Invalid method: {method}. Valid methods: iqr, zscore"
 
-    df = _data_cache[date]
+    df = _coerce_numeric(_data_cache[date])    
     numeric_cols = ["volume", "unit_price", "discount_pct", "discount_amount", "gross_revenue", "revenue"]
 
     if column:
@@ -304,17 +339,21 @@ def detect_anomalies(column: str = None, method: str = "iqr", date: str = None) 
     for col in check_cols:
         if col not in df.columns:
             continue
+        
+        col_data = df[col].dropna()
+        if len(col_data) == 0:
+            continue
 
         if method == "zscore":
-            mean = df[col].mean()
-            std = df[col].std()
+            mean = col_data.mean()
+            std = col_data.std()
             if std == 0:
                 continue
             z_scores = (df[col] - mean) / std
             outliers = df[z_scores.abs() > 3]
         else:
-            q1 = df[col].quantile(0.25)
-            q3 = df[col].quantile(0.75)
+            q1 = col_data.quantile(0.25)
+            q3 = col_data.quantile(0.75)
             iqr = q3 - q1
             lower = q1 - 1.5 * iqr
             upper = q3 + 1.5 * iqr

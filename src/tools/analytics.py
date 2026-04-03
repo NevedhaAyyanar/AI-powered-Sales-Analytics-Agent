@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from langchain_core.tools import tool
 from src.tools.loader import _data_cache
+from src.tools.validator import _coerce_numeric
 
 def _filter_by_status(df: pd.DataFrame, status: str = "Settled") -> pd.DataFrame:
     """Filter DataFrame by transaction status if specified."""
@@ -18,7 +19,7 @@ def _aggregate_by_period(df: pd.DataFrame, metric: str, period: str) -> pd.DataF
         return f"Invalid metric '{metric}'. Choose from: {', '.join(VALID_METRICS)}"
     
     df = df.copy()
-    df["order_date"] = pd.to_datetime(df["order_date"])
+    df["order_date"] = pd.to_datetime(df["order_date"], format="mixed", errors="coerce")
 
     if period == "weekly":
         df["period"] = df["order_date"].dt.strftime("%Y-W%U")
@@ -53,6 +54,9 @@ def _detect_spikes(agg: pd.DataFrame, metric_col: str, threshold: float = 1.5) -
 
 def _revenue_leakage(df: pd.DataFrame) -> str:
     """Calculate revenue impact of data quality issues."""
+    
+    df = _coerce_numeric(df)
+    df = df.dropna(subset=["volume", "unit_price", "gross_revenue", "discount_amount", "discount_pct", "revenue"])
     report = "REVENUE LEAKAGE ANALYSIS\n"
     total_revenue = df["revenue"].sum()
 
@@ -118,6 +122,7 @@ def analyze_trends(metric: str = "revenue", period: str = "daily", date: str = N
         return f"Invalid status: {status}. Valid values: Settled, Unsettled"
     
     df = _filter_by_status(_data_cache[date], status)
+    df = _coerce_numeric(df)
 
     if len(df) == 0:
         return f"No {status} transactions found in the data."
@@ -196,6 +201,7 @@ def segment_analysis(dimension: str, metric: str = "revenue", date: str = None, 
         return f"Invalid status: {status}. Valid values: Settled, Unsettled"
 
     df = _filter_by_status(_data_cache[date], status)
+    df = _coerce_numeric(df)
 
     if len(df) == 0:
         return f"No {status} transactions found in the data."
@@ -238,9 +244,9 @@ def segment_analysis(dimension: str, metric: str = "revenue", date: str = None, 
     report += f"  {count_80} of {len(agg)} {dimension}s drive ~80% of {metric}\n\n"
 
     df_copy = df.copy()
-    df_copy["order_date"] = pd.to_datetime(df_copy["order_date"])
+    df_copy["order_date"] = pd.to_datetime(df_copy["order_date"], format="mixed", errors="coerce")
     df_copy["week"] = df_copy["order_date"].dt.strftime("%Y-W%U")
-    weeks = sorted(df_copy["week"].unique())
+    weeks = sorted(df_copy["week"].dropna().unique())
 
     if len(weeks) >= 2:
         first_week = weeks[0]

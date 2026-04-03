@@ -3,6 +3,7 @@ import pandas as pd
 from itertools import combinations
 from langchain_core.tools import tool
 from src.tools.loader import _data_cache, _download_csv
+from src.tools.validator import _coerce_numeric
 
 def _get_dim_product() -> pd.DataFrame:
     if "dim_product" not in _data_cache:
@@ -45,6 +46,7 @@ def analyze_products(date: str = None, status: str = "Settled") -> str:
         return f"Invalid status: {status}. Valid values: Settled, Unsettled"
 
     df = _filter_by_status(_data_cache[date], status)
+    df = _coerce_numeric(df)
     if len(df) == 0:
         return f"No {status} transactions found."
     
@@ -141,16 +143,18 @@ def analyze_customers(date: str = None, status: str = "Settled") -> str:
         return f"Invalid status: {status}. Valid values: Settled, Unsettled"
 
     df = _filter_by_status(_data_cache[date], status)
+    df = _coerce_numeric(df)
     if len(df) == 0:
         return f"No {status} transactions found."
 
     dim_customer = _get_dim_customer()
     full_df = _data_cache[date]
+    full_df = _coerce_numeric(full_df)
 
     report = f"CUSTOMER ANALYSIS for {date} ({status} only)\n"
     report += "=" * 50 + "\n\n"
     
-    merged = df.merge(dim_customer, on="customer_code", how="left")
+    merged = df.merge(dim_customer[["customer_code", "customer_name"]], on="customer_code", how="left")
     cust_agg = merged.groupby(["customer_code", "customer_name", "region"]).agg(
         total_revenue=("revenue", "sum"),
         order_count=("order_number", "nunique"),
@@ -167,7 +171,7 @@ def analyze_customers(date: str = None, status: str = "Settled") -> str:
     cust_agg["cumulative_pct"] = cust_agg["pct_share"].cumsum().round(1)
 
     report += "TOP 10 CUSTOMERS BY REVENUE\n"
-    top10 = cust_agg.head(10)[["rank", "customer_code", "customer_name", "region",
+    top10 = cust_agg.head(10)[["rank", "customer_code", "customer_name",
                                 "total_revenue", "order_count", "avg_order_value", "pct_share"]]
     report += top10.to_string(index=False) + "\n\n"
 
@@ -202,7 +206,7 @@ def analyze_customers(date: str = None, status: str = "Settled") -> str:
     risky = settlement[settlement["settlement_rate"] < 70].sort_values("total_revenue", ascending=False)
 
     if len(risky) > 0:
-        risky_enriched = risky.merge(dim_customer, on="customer_code", how="left")
+        risky_enriched = risky.merge(dim_customer[["customer_code", "customer_name"]], on="customer_code", how="left")
         report += f"SETTLEMENT RISK ({len(risky)} customers with <70% settlement rate)\n"
         display = risky_enriched[["customer_code", "customer_name", "total_orders",
                                    "settled_orders", "settlement_rate", "total_revenue"]].head(10)
@@ -248,6 +252,7 @@ def analyze_basket(date: str = None, status: str = "Settled") -> str:
         return f"Invalid status: {status}. Valid values: Settled, Unsettled"
 
     df = _filter_by_status(_data_cache[date], status)
+    df = _coerce_numeric(df)
     if len(df) == 0:
         return f"No {status} transactions found."
 
@@ -283,7 +288,8 @@ def analyze_basket(date: str = None, status: str = "Settled") -> str:
     pair_counts = {}
 
     for _, row in order_products.iterrows():
-        products = sorted(row["product_code"])
+        #products = sorted(row["product_code"])
+        products = sorted([p for p in row["product_code"] if isinstance(p, str)])
         if len(products) >= 2:
             for p1, p2 in combinations(products, 2):
                 pair = (p1, p2)
